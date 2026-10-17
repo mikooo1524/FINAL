@@ -1,4 +1,6 @@
-# EventGear
+# EventGear-Partial-App-main-Updated
+
+Updated UI and Logic for EventGear.
 
 An offline event-equipment rental app built with React Native, Expo SDK 57,
 Expo Router / React Navigation, and SQLite. This completes the supplied
