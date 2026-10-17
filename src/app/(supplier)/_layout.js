@@ -1,0 +1,28 @@
+import { Tabs } from 'expo-router';
+import { colors } from '../../theme';
+import { OverviewGlyph } from '../../OverviewIcon';
+import SignOutButton from '../../SignOutButton';
+
+const icons = { index: 'home', 'manage-equipment': 'cube', reservations: 'clipboard' };
+
+export default function SupplierTabsLayout() {
+  return (
+    <Tabs
+      screenOptions={({ route }) => ({
+        headerStyle: { backgroundColor: colors.navy },
+        headerTintColor: '#FFFFFF',
+        headerTitleStyle: { fontWeight: '800' },
+        headerRight: () => <SignOutButton style={{ marginRight: 12 }} />,
+        tabBarActiveTintColor: colors.tealDark,
+        tabBarInactiveTintColor: '#8490A1',
+        tabBarStyle: { height: 66, paddingTop: 7, paddingBottom: 8, borderTopColor: colors.border },
+        tabBarLabelStyle: { fontSize: 11, fontWeight: '700' },
+        tabBarIcon: ({ color }) => <OverviewGlyph name={icons[route.name]} size={23} color={color} />,
+      })}
+    >
+      <Tabs.Screen name="index" options={{ title: 'Dashboard', headerTitle: 'Supplier' }} />
+      <Tabs.Screen name="manage-equipment" options={{ title: 'Equipment' }} />
+      <Tabs.Screen name="reservations" options={{ title: 'Reservations' }} />
+    </Tabs>
+  );
+}

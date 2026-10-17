@@ -1,0 +1,92 @@
+import { SafeAreaView } from 'react-native-safe-area-context';
+import React from 'react';
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { colors, radius, shadow } from './theme';
+
+const roles = [
+  {
+    key: 'CustomerTabs',
+    icon: '🎉',
+    title: 'Continue as Customer',
+    description: 'Browse equipment, build a cart, and create a rental reservation.',
+    active: true,
+  },
+  {
+    key: 'SupplierTabs',
+    icon: '🏪',
+    title: 'Continue as Supplier',
+    description: 'Manage equipment listings and update reservation statuses.',
+    active: true,
+  },
+  {
+    key: 'Admin',
+    icon: '🛡️',
+    title: 'Administrator',
+    description: 'Monitor bookings, manage user records, and review system activity.',
+    active: true,
+  },
+];
+
+export default function RoleSelectionScreen({ navigation }) {
+  return (
+    <SafeAreaView style={styles.safe}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <Image source={require('../assets/icon.png')} style={{ width: 90, height: 90, alignSelf: 'center', borderRadius: 24 }} accessibilityLabel="EventGear logo" />
+        <Text style={styles.logo}>Event<Text style={styles.logoAccent}>Gear</Text></Text>
+        <Text style={styles.tagline}>Event equipment rentals, made simple.</Text>
+
+        <View style={styles.demoBadge}>
+          <Text style={styles.demoBadgeText}>LOCAL RENTAL SYSTEM</Text>
+        </View>
+
+        <Text style={styles.heading}>Choose a demo role</Text>
+        <Text style={styles.subheading}>Local demonstration accounts • no sign-in required.</Text>
+
+        {roles.map((role) => (
+          <Pressable
+            key={role.key}
+            disabled={!role.active}
+            onPress={() => navigation.navigate(role.key)}
+            style={({ pressed }) => [
+              styles.roleCard,
+              !role.active && styles.roleCardDisabled,
+              pressed && styles.pressed,
+            ]}
+          >
+            <View style={styles.roleIcon}><Text style={styles.roleEmoji}>{role.icon}</Text></View>
+            <View style={styles.roleCopy}>
+              <Text style={styles.roleTitle}>{role.title}</Text>
+              <Text style={styles.roleDescription}>{role.description}</Text>
+            </View>
+            <Text style={styles.arrow}>{role.active ? '›' : 'Soon'}</Text>
+          </Pressable>
+        ))}
+
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: colors.background },
+  content: { width: '100%', maxWidth: 600, alignSelf: 'center', flexGrow: 1, padding: 24, paddingTop: 45 },
+  brandIcon: { width: 82, height: 82, borderRadius: 24, backgroundColor: colors.navy, alignSelf: 'center', alignItems: 'center', justifyContent: 'center', position: 'relative', ...shadow },
+  brandEmoji: { fontSize: 39 },
+  caseEmoji: { fontSize: 23, position: 'absolute', right: 7, bottom: 6 },
+  logo: { textAlign: 'center', fontSize: 36, color: colors.navy, fontWeight: '900', marginTop: 16 },
+  logoAccent: { color: colors.teal },
+  tagline: { textAlign: 'center', color: colors.muted, marginTop: 4, fontSize: 15 },
+  demoBadge: { alignSelf: 'center', borderRadius: 999, backgroundColor: colors.mint, paddingHorizontal: 12, paddingVertical: 6, marginTop: 14 },
+  demoBadgeText: { color: colors.tealDark, fontWeight: '900', fontSize: 10, letterSpacing: 1 },
+  heading: { color: colors.text, fontSize: 23, fontWeight: '900', marginTop: 34 },
+  subheading: { color: colors.muted, marginTop: 4, marginBottom: 16 },
+  roleCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, padding: 16, marginBottom: 13, borderRadius: radius.medium, ...shadow },
+  roleCardDisabled: { opacity: 0.55 },
+  roleIcon: { width: 52, height: 52, borderRadius: 15, backgroundColor: colors.mint, alignItems: 'center', justifyContent: 'center' },
+  roleEmoji: { fontSize: 27 },
+  roleCopy: { flex: 1, paddingHorizontal: 14 },
+  roleTitle: { color: colors.text, fontSize: 16, fontWeight: '900' },
+  roleDescription: { color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 4 },
+  arrow: { color: colors.tealDark, fontSize: 30, fontWeight: '500' },
+  pressed: { opacity: 0.76, transform: [{ scale: 0.99 }] },
+});

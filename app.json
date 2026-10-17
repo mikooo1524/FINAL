@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "EventGear",
+    "slug": "eventgear",
+    "scheme": "eventgear",
+    "version": "2.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-sqlite",
+      "expo-router",
+      ["expo-image-picker", {
+        "photosPermission": "Allow EventGear to access your photos to add equipment product images.",
+        "cameraPermission": false,
+        "microphonePermission": false
+      }]
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.eventgear.prototype",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B1F3A",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
