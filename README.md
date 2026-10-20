@@ -1,4 +1,4 @@
-# EventGear-Partial-App-main-Updated
+# FINAL - EventGear
 
 Updated UI and Logic for EventGear.
 
@@ -17,13 +17,19 @@ npx expo start
 ```
 
 Open with an Expo Go version supporting **SDK 57**, or build an Android APK.
-Choose Customer, Supplier, or Administrator. Customers register with their name,
-contact number, email and password, then sign in. Registered customer details
-appear automatically in **Admin → Users**. Each customer has a separate cart
-and rental history. Supplier and administrator access remain **local demo roles**.
-IDs 1/2/3 preserve the legacy demo records. Accounts and bookings are stored on
-the same device; they do not synchronize across devices. See
-[customer sign-in details](docs/CUSTOMER_SIGN_IN.md).
+On first launch, choose **Set up administrator** and enter your own name, email,
+contact number and password. Subsequent accounts register as customers; an
+administrator can use **Switch demo role** on the dashboard to open
+Supplier or Administrator views. Regular customers stay in the customer view.
+The admin Users list and dashboard customer total include only non-demo customers. New databases start with an empty
+catalog and no demo accounts. Suppliers and administrators can add equipment.
+
+When upgrading an existing database, set up a regular administrator if prompted.
+Once a registered administrator exists, the legacy Customer, Supplier, Admin and
+UserDemo accounts are removed. Their equipment and booking history transfer to
+that administrator; their credentials and carts are deleted. The last registered
+administrator cannot be deleted or demoted. Accounts and bookings remain on the
+same device and do not synchronize across devices.
 
 ## Completed features
 
@@ -36,7 +42,7 @@ the same device; they do not synchronize across devices. See
   booking review with contact/notes/details,
   and success/error confirmations.
 - **Administrator:** overview, user-directory CRUD with registered customer details,
-  protected demo accounts, booking status updates and rental-value reports.
+  last-administrator protection, booking status updates and rental-value reports.
 - **UX:** custom EventGear logo, navy/teal branding, reusable components,
   accessible buttons, mobile/web dialogs, loading/error/empty states,
   pull-to-refresh and responsive layouts.
@@ -64,7 +70,7 @@ booking. Cancellation releases stock.
 
 Active bookings block equipment deletion. Listings with historical bookings
 are archived to preserve receipts; unreferenced listings are physically
-deleted, demonstrating SQL DELETE. Seed equipment is created only once.
+deleted, demonstrating SQL DELETE. No sample equipment is created automatically.
 
 **Payment is a demonstration:** it records an intended method, charges no
 money, and never marks payment collected. Reports show rental value, not revenue.
@@ -106,10 +112,15 @@ contact editing, supplier create/delete/status updates, administrator user
 creation and reports, with no runtime errors. PNGs in `docs/screenshots` are
 actual web-app captures. Native APK installation still needs testing on a phone.
 
-For an optional repeatable browser workflow, install Playwright separately
-(`npm install --no-save playwright` and `npx playwright install chromium`),
-export the web app, then run `node scripts/ui_smoke.cjs` from the project root.
-On Windows set `EVENTGEAR_PYTHON=python` if `python3` is unavailable.
+For the repeatable browser check, export the web app to the test directory and run:
+
+```bash
+npx expo export --platform web --output-dir dist-test/customer-auth
+npm run test:auth-ui
+```
+
+This checks registration input restrictions, sign-in, administrator switching
+between Supplier and Administrator, and the customer-only admin directory.
 
 ## Optional web preview
 

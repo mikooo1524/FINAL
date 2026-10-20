@@ -49,3 +49,8 @@ dist/
 .env
 .env.*
 !.env.example
+dist-cleanup-check/
+dist-test/
+
+# local cleanup backups
+.cleanup-backups/

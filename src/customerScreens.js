@@ -47,7 +47,7 @@ function screenTitle(navigation, title) {
 }
 
 export function CustomerHomeScreen({ navigation }) {
-  const { equipment, rentals, refreshEquipment, refreshRentals, customer, canSwitchRoles } = useApp();
+  const { equipment, rentals, refreshEquipment, refreshRentals, customer } = useApp();
   useFocusEffect(useCallback(() => { Promise.all([refreshEquipment(), refreshRentals()]).catch(error => Alert.alert('Could not refresh', error.message)); }, [refreshEquipment, refreshRentals]));
   const active = rentals.filter((r) => ['pending', 'confirmed'].includes(r.status));
 
@@ -74,10 +74,6 @@ export function CustomerHomeScreen({ navigation }) {
       {equipment.slice(0, 3).map((item) => (
         <EquipmentCard key={item.equipment_id} item={item} compact onPress={() => navigation.navigate('EquipmentDetails', { equipmentId: item.equipment_id })} />
       ))}
-
-      {canSwitchRoles && <Pressable onPress={() => navigation.getParent()?.navigate('RoleSelect')} style={styles.roleSwitch}>
-        <Text style={styles.roleSwitchText}>⇄ Switch demo role</Text>
-      </Pressable>}
     </ScrollView>
   );
 }
@@ -525,8 +521,6 @@ const styles = StyleSheet.create({
   statCard: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.medium, padding: 16, borderWidth: 1, borderColor: colors.border },
   statNumber: { color: colors.navy, fontSize: 24, fontWeight: '900' },
   statLabel: { color: colors.muted, marginTop: 3, fontSize: 12 },
-  roleSwitch: { alignItems: 'center', marginTop: 20, padding: 14 },
-  roleSwitchText: { color: colors.tealDark, fontWeight: '800' },
   searchWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, borderRadius: radius.medium, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, height: 52 },
   searchIcon: { color: colors.muted, fontSize: 23, marginRight: 8 },
   searchInput: { flex: 1, color: colors.text, fontSize: 16 },

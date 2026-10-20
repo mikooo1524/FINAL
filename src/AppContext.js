@@ -2,7 +2,7 @@ import { Alert } from './feedback';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import * as Crypto from 'expo-crypto';
 import { useSQLiteContext } from 'expo-sqlite';
-import { getCart, persistCart, getCustomerRentals, getEquipment, getCustomerProfile, needsDemoOwnerSetup, registerCustomer, signInCustomer } from './database';
+import { getCart, persistCart, getCustomerRentals, getEquipment, needsAdministratorSetup, registerCustomer, signInCustomer } from './database';
 
 // Context shares SQLite-backed lists and cart state across nested screens.
 const AppContext = createContext(null);
@@ -13,13 +13,13 @@ export function AppProvider({ children }) {
   const [rentals, setRentals] = useState([]);
   const [customer, setCustomer] = useState(null);
   const [cartState, setCartState] = useState({ owner: null, items: [] });
-  const customerId = customer?.user_id || null;
-  const canSwitchRoles = !!customer?.demo_access;
-  const canAccessCustomer = !!customer && (canSwitchRoles || customer.role === 'customer');
+  const customerId = customer?.role === 'customer' ? customer.user_id : null;
+  const canSwitchRoles = customer?.role === 'admin';
+  const canAccessCustomer = customer?.role === 'customer';
   const canAccessSupplier = !!customer && (canSwitchRoles || customer.role === 'supplier');
-  const canAccessAdmin = !!customer && (canSwitchRoles || customer.role === 'admin');
+  const canAccessAdmin = !!customer && (customer.role === 'admin');
   const canAccessManagement = canAccessSupplier || canAccessAdmin;
-  const [ownerSetupNeeded, setOwnerSetupNeeded] = useState(false);
+  const [administratorSetupNeeded, setAdministratorSetupNeeded] = useState(false);
   const currentCustomer = useRef(null);
   const cart = useMemo(() => cartState.owner === customerId ? cartState.items : [], [cartState, customerId]);
   const cartReady = customerId !== null && cartState.owner === customerId;
@@ -45,7 +45,7 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     let active = true;
-    needsDemoOwnerSetup(db).then(needed => { if (active) setOwnerSetupNeeded(needed); });
+    needsAdministratorSetup(db).then(needed => { if (active) setAdministratorSetupNeeded(needed); });
     Promise.all([getEquipment(db), customerId ? getCustomerRentals(db, customerId) : [], customerId ? getCart(db, customerId) : []]).then(([nextEquipment, nextRentals, savedCart]) => {
       if (!active) return;
       setEquipment(nextEquipment);
@@ -64,23 +64,15 @@ export function AppProvider({ children }) {
     currentCustomer.current = profile.user_id;
     setCartState({ owner: null, items: [] }); setRentals([]); setBookingDraft(null);
     setCustomer(profile);
-    setOwnerSetupNeeded(false);
+    setAdministratorSetupNeeded(false);
     return profile;
   }, []);
   const signIn = useCallback(async (email, password) => acceptCustomer(await signInCustomer(db, email, password, Crypto.getRandomBytesAsync)), [db, acceptCustomer]);
-  const register = useCallback(async (form, setupOwner = false) => acceptCustomer(await registerCustomer(db, form, Crypto.getRandomBytesAsync, setupOwner)), [db, acceptCustomer]);
+  const register = useCallback(async (form, setupAdministrator = false) => acceptCustomer(await registerCustomer(db, form, Crypto.getRandomBytesAsync, setupAdministrator)), [db, acceptCustomer]);
   const signOut = useCallback(() => {
     currentCustomer.current = null;
     setCustomer(null); setCartState({ owner: null, items: [] }); setRentals([]); setBookingDraft(null);
   }, []);
-  const refreshCustomer = useCallback(async () => {
-    if (!customerId) return;
-    const profile = await getCustomerProfile(db, customerId);
-    if (currentCustomer.current !== customerId) return;
-    if (profile) setCustomer(profile);
-    else signOut();
-  }, [customerId, db, signOut]);
-
   const addToCart = useCallback((item, quantity = 1) => {
     if (!cartReady) throw new Error('Please wait for your cart to load.');
     if (!item.is_active || item.total_quantity < 1) throw new Error('This equipment is out of stock.');
@@ -116,7 +108,7 @@ export function AppProvider({ children }) {
   const value = useMemo(
     () => ({
       db,
-      customer, signIn, register, signOut, cartReady, canSwitchRoles, canAccessManagement, canAccessCustomer, canAccessSupplier, canAccessAdmin, ownerSetupNeeded, refreshCustomer,
+      customer, signIn, register, signOut, cartReady, canSwitchRoles, canAccessManagement, canAccessCustomer, canAccessSupplier, canAccessAdmin, administratorSetupNeeded,
       equipment,
       rentals,
       cart,
@@ -131,7 +123,7 @@ export function AppProvider({ children }) {
     }),
     [
       db,
-      customer, signIn, register, signOut, cartReady, setCart, canSwitchRoles, canAccessManagement, canAccessCustomer, canAccessSupplier, canAccessAdmin, ownerSetupNeeded, refreshCustomer,
+      customer, signIn, register, signOut, cartReady, setCart, canSwitchRoles, canAccessManagement, canAccessCustomer, canAccessSupplier, canAccessAdmin, administratorSetupNeeded,
       equipment,
       rentals,
       cart,

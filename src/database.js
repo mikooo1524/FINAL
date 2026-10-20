@@ -1,13 +1,58 @@
 import { dummyPasswordHash, hashPassword, needsPasswordMigration, verifyPassword } from './passwords.js';
 
-const seedEquipment = [
-  ['Premium Sound System', 'Audio', 'Two powered speakers, mixer, microphones, and stands.', 2500, 5, '🎤'],
-  ['LED Party Lights', 'Lighting', 'Color-changing LED lights for indoor and outdoor events.', 850, 12, '💡'],
-  ['Folding Tables', 'Furniture', 'Six-foot rectangular tables suitable for dining or registration.', 300, 30, '🪑'],
-  ['Monobloc Chairs', 'Furniture', 'Clean white chairs for parties, programs, and community events.', 35, 150, '🪑'],
-  ['Pop-up Canopy Tent', 'Tents', 'Three-by-three meter weather-resistant event canopy.', 1200, 8, '⛺'],
-  ['Portable Projector', 'Visual', 'Full HD projector with HDMI cable and portable screen.', 1800, 4, '🎥'],
-];
+// Match legacy identities rather than treating all low IDs as demo users.
+const legacyDemoPredicate = `(u.user_id = 1 AND u.name = 'Demo Customer')
+ OR (u.user_id = 2 AND u.name = 'EventGear Supplier')
+ OR (u.user_id = 3 AND u.name = 'Demo Administrator')
+ OR (lower(trim(u.name)) = 'userdemo')`;
+
+// Keep demo identities out of administrator user lists and totals, even if recreated.
+const visibleAdminUserPredicate = `u.demo_access = 0 AND lower(trim(u.name)) NOT IN (
+  'demo customer', 'customer demo', 'eventgear supplier', 'supplier demo',
+  'demo administrator', 'admin demo', 'userdemo')`;
+
+const visibleAdminCustomerPredicate = `u.role = 'customer' AND (${visibleAdminUserPredicate})`;
+
+async function removeLegacyDemoAccounts(db, administratorId) {
+ if (await db.getFirstAsync("SELECT value FROM app_settings WHERE key = 'demo_accounts_removed_v2'")) return;
+ const accounts = await db.getAllAsync(`SELECT u.user_id FROM users u LEFT JOIN customer_credentials c ON c.user_id = u.user_id WHERE ${legacyDemoPredicate}`);
+ for (const { user_id: id } of accounts) {
+  if (id === administratorId) continue;
+  await db.runAsync('UPDATE equipment SET supplier_id = ? WHERE supplier_id = ?', administratorId, id);
+  await db.runAsync('UPDATE reservations SET customer_id = ? WHERE customer_id = ?', administratorId, id);
+  await db.runAsync('DELETE FROM users WHERE user_id = ?', id);
+ }
+ await db.runAsync('UPDATE users SET demo_access = 0 WHERE demo_access <> 0');
+ await db.runAsync("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('demo_accounts_removed_v2', '1')");
+}
+
+// One-time removal of the two customer accounts explicitly identified by the user.
+// Match the full identities so unrelated accounts and reused IDs remain untouched.
+async function removeRequestedCustomerAccounts(db, administratorId = null) {
+  if (await db.getFirstAsync("SELECT value FROM app_settings WHERE key = 'requested_customers_removed_20261020'")) return;
+  const accounts = await db.getAllAsync(`SELECT user_id FROM users WHERE role = 'customer' AND (
+    (user_id = 6 AND name = 'David' AND contact = '938321320123') OR
+    (user_id = 9 AND name = 'david' AND contact = '2313123123'))`);
+  let pending = false;
+  for (const { user_id: id } of accounts) {
+    const linked = await db.getFirstAsync(`SELECT
+      (SELECT COUNT(*) FROM equipment WHERE supplier_id = ?) +
+      (SELECT COUNT(*) FROM reservations WHERE customer_id = ?) AS count`, id, id);
+    if (linked.count && !administratorId) {
+      pending = true;
+      continue;
+    }
+    if (administratorId) {
+      await db.runAsync('UPDATE equipment SET supplier_id = ? WHERE supplier_id = ?', administratorId, id);
+      await db.runAsync('UPDATE reservations SET customer_id = ? WHERE customer_id = ?', administratorId, id);
+    }
+    await db.runAsync('DELETE FROM cart_items WHERE customer_id = ?', id);
+    await db.runAsync('DELETE FROM customer_credentials WHERE user_id = ?', id);
+    await db.runAsync('DELETE FROM users WHERE user_id = ?', id);
+    await audit(db, 'User deleted', `Requested removal of customer #${id}`);
+  }
+  if (!pending) await db.runAsync("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('requested_customers_removed_20261020', '1')");
+}
 
 // Schema creation is idempotent: reopening the app preserves customer records.
 export async function initializeDatabase(db) {
@@ -115,50 +160,11 @@ export async function initializeDatabase(db) {
     });
   }
 
-  await db.runAsync(
-    `INSERT OR IGNORE INTO users (user_id, name, contact, role) VALUES (?, ?, ?, ?)`,
-    1,
-    'Demo Customer',
-    '0917 000 0001',
-    'customer'
-  );
-  await db.runAsync(
-    `INSERT OR IGNORE INTO users (user_id, name, contact, role) VALUES (?, ?, ?, ?)`,
-    2,
-    'EventGear Supplier',
-    '0917 000 0002',
-    'supplier'
-  );
-  await db.runAsync(
-    `INSERT OR IGNORE INTO users (user_id, name, contact, role) VALUES (?, ?, ?, ?)`,
-    3,
-    'Demo Administrator',
-    'admin@eventgear.local',
-    'admin'
-  );
-
-  const existing = await db.getFirstAsync('SELECT COUNT(*) AS count FROM equipment');
-  const seeded = await db.getFirstAsync("SELECT value FROM app_settings WHERE key = 'seeded'");
-  if (existing.count === 0 && !seeded) {
-    for (const item of seedEquipment) {
-      await db.runAsync(
-        `INSERT INTO equipment
-          (supplier_id, name, category, description, daily_rate, total_quantity, image_ref)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        2,
-        ...item
-      );
-    }
-  }
-  await db.runAsync("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('seeded', '1')");
-  // One-time upgrade for the existing UserDemo account identified by the user.
-  const checked = await db.getFirstAsync("SELECT value FROM app_settings WHERE key = 'demo_owner_migrated'");
-  if (!checked) {
-    await db.runAsync(`UPDATE users SET demo_access = 1 WHERE user_id IN (
-      SELECT c.user_id FROM customer_credentials c JOIN users u ON u.user_id = c.user_id
-      WHERE c.email = 'userdemo@gmail.com' AND lower(trim(u.name)) = 'userdemo')`);
-    await db.runAsync("INSERT INTO app_settings (key, value) VALUES ('demo_owner_migrated', '1')");
-  }
+  const administrator = await db.getFirstAsync(`SELECT u.user_id FROM users u JOIN customer_credentials c ON c.user_id = u.user_id WHERE u.role = 'admin' AND NOT (${legacyDemoPredicate}) ORDER BY u.user_id LIMIT 1`);
+  await transaction(db, async () => {
+    if (administrator) await removeLegacyDemoAccounts(db, administrator.user_id);
+    await removeRequestedCustomerAccounts(db, administrator?.user_id);
+  });
 }
 
 // Parameter binding keeps search text separate from executable SQL.
@@ -255,7 +261,7 @@ async function audit(db, action, details) {
   await db.runAsync('INSERT INTO audit_log (action, details) VALUES (?, ?)', action, details);
 }
 
-export async function createReservation(db, booking, customerId = 1) {
+export async function createReservation(db, booking, customerId = null) {
   return transaction(db, async () => {
     const customer = await db.getFirstAsync("SELECT user_id FROM users WHERE user_id = ? AND role = 'customer'", customerId);
     if (!customer) throw new Error('Please sign in to a customer account.');
@@ -298,7 +304,7 @@ export async function createReservation(db, booking, customerId = 1) {
   });
 }
 
-export async function getCustomerRentals(db, customerId = 1) {
+export async function getCustomerRentals(db, customerId = null) {
   return db.getAllAsync(
     `SELECT r.*,
       COUNT(ri.item_id) AS item_count,
@@ -337,7 +343,6 @@ export async function getSupplierReservations(db) {
      JOIN users u ON u.user_id = r.customer_id
      JOIN reservation_items ri ON ri.reservation_id = r.reservation_id
      JOIN equipment e ON e.equipment_id = ri.equipment_id
-     WHERE e.supplier_id = 2
      GROUP BY r.reservation_id
      ORDER BY r.created_at DESC, r.reservation_id DESC`
   );
@@ -380,7 +385,7 @@ export async function updateReservationStatus(db, reservationId, status, custome
     await audit(db, 'Reservation status', `${r.booking_code}: ${r.status} → ${status}`);
   });
 }
-export async function updateReservationContact(db, reservationId, contact, note, startDate, endDate, customerId = 1) {
+export async function updateReservationContact(db, reservationId, contact, note, startDate, endDate, customerId = null) {
   if (!contact.trim()) throw new Error('Contact information is required.');
   return transaction(db, async () => {
     const r = await db.getFirstAsync('SELECT * FROM reservations WHERE reservation_id = ? AND customer_id = ?', reservationId, customerId);
@@ -410,7 +415,7 @@ export async function updateReservationContact(db, reservationId, contact, note,
   });
 }
 
-export async function saveEquipment(db, form, equipmentId) {
+export async function saveEquipment(db, form, equipmentId, supplierId = null) {
   const rate = Number(form.dailyRate), stock = Number(form.totalQuantity);
   if (!form.name.trim() || !form.category.trim() || !form.description.trim()) throw new Error('Complete all equipment details.');
   if (!form.dailyRate.trim() || !Number.isFinite(rate) || rate < 0) throw new Error('Enter a valid daily rate.');
@@ -424,7 +429,7 @@ export async function saveEquipment(db, form, equipmentId) {
       if (stock < old.total_quantity - available) throw new Error('Quantity cannot be lower than stock committed to current or future bookings.');
       await db.runAsync(`UPDATE equipment SET name = ?, category = ?, description = ?, daily_rate = ?, total_quantity = ?, image_ref = ? WHERE equipment_id = ?`, ...values, equipmentId);
     } else {
-      await db.runAsync(`INSERT INTO equipment (supplier_id, name, category, description, daily_rate, total_quantity, image_ref) VALUES (2, ?, ?, ?, ?, ?, ?)`, ...values);
+      await db.runAsync(`INSERT INTO equipment (supplier_id, name, category, description, daily_rate, total_quantity, image_ref) VALUES (?, ?, ?, ?, ?, ?, ?)`, supplierId, ...values);
     }
     await audit(db, equipmentId ? 'Equipment updated' : 'Equipment created', form.name.trim());
   });
@@ -457,30 +462,37 @@ export async function deleteEquipment(db, equipmentId) {
     await audit(db, history.count ? 'Equipment archived' : 'Equipment deleted', `Equipment #${equipmentId}`);
   });
 }
-export async function getUsers(db) {
+export async function getAdminCustomers(db) {
   return db.getAllAsync(`SELECT u.*, c.email, c.created_at AS registered_at
-    FROM users u LEFT JOIN customer_credentials c ON c.user_id = u.user_id ORDER BY u.user_id`);
+    FROM users u LEFT JOIN customer_credentials c ON c.user_id = u.user_id
+    WHERE ${visibleAdminCustomerPredicate} ORDER BY u.user_id`);
 }
 
-export async function registerCustomer(db, form, randomBytes, setupOwner = false) {
+export async function registerCustomer(db, form, randomBytes, setupAdministrator = false) {
   const email = (form.email || '').trim().toLowerCase();
   if (!form.name?.trim() || !form.contact?.trim()) throw new Error('Name and contact number are required.');
+  if (!/^[0-9]+$/.test(form.contact.trim())) throw new Error('Contact number must contain digits only.');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) throw new Error('Enter a valid email address.');
   if (typeof form.password !== 'string' || form.password.length < 8 || form.password.length > 128)
     throw new Error('Use a password between 8 and 128 characters.');
+  if (!/^[A-Za-z0-9]+$/.test(form.password)) throw new Error('Password must contain letters and numbers only, without spaces or symbols.');
   if (await db.getFirstAsync('SELECT user_id FROM customer_credentials WHERE email = ?', email))
     throw new Error('This email is already registered. Please sign in.');
   const passwordHash = await hashPassword(form.password, randomBytes);
   return transaction(db, async () => {
-    if (setupOwner && (await db.getFirstAsync('SELECT COUNT(*) AS count FROM customer_credentials')).count !== 0)
-      throw new Error('UserDemo setup is only available before any account is registered.');
+    if (setupAdministrator && !(await needsAdministratorSetup(db)))
+      throw new Error('Administrator setup is only available when no regular administrator exists.');
     if (await db.getFirstAsync('SELECT user_id FROM customer_credentials WHERE email = ?', email))
       throw new Error('This email is already registered. Please sign in.');
     const result = await db.runAsync("INSERT INTO users (name, contact, role) VALUES (?, ?, 'customer')", form.name.trim(), form.contact.trim());
     await db.runAsync('INSERT INTO customer_credentials (user_id, email, password_hash) VALUES (?, ?, ?)', result.lastInsertRowId, email, passwordHash);
-    if (setupOwner) await db.runAsync("UPDATE users SET name = 'UserDemo', demo_access = 1 WHERE user_id = ?", result.lastInsertRowId);
+    if (setupAdministrator) {
+      await db.runAsync("UPDATE users SET role = 'admin' WHERE user_id = ?", result.lastInsertRowId);
+      await removeLegacyDemoAccounts(db, result.lastInsertRowId);
+      await removeRequestedCustomerAccounts(db, result.lastInsertRowId);
+    }
     await audit(db, 'Customer registered', `Customer #${result.lastInsertRowId}`);
-    return { user_id: result.lastInsertRowId, name: setupOwner ? 'UserDemo' : form.name.trim(), contact: form.contact.trim(), role: 'customer', email, demo_access: setupOwner ? 1 : 0 };
+    return { user_id: result.lastInsertRowId, name: form.name.trim(), contact: form.contact.trim(), role: setupAdministrator ? 'admin' : 'customer', email };
   });
 }
 
@@ -495,42 +507,22 @@ export async function signInCustomer(db, email, password, randomBytes) {
     const nextHash = await hashPassword(password, randomBytes);
     await db.runAsync('UPDATE customer_credentials SET password_hash = ? WHERE user_id = ? AND password_hash = ?', nextHash, user.user_id, user.password_hash);
   }
-  return { user_id: user.user_id, name: user.name, contact: user.contact, role: user.role, email: user.email, demo_access: user.demo_access };
+  return { user_id: user.user_id, name: user.name, contact: user.contact, role: user.role, email: user.email };
 }
 
-export async function getCustomerProfile(db, customerId) {
-  return db.getFirstAsync(`SELECT u.user_id, u.name, u.contact, u.role, u.demo_access, c.email
-    FROM users u JOIN customer_credentials c ON c.user_id = u.user_id
-    WHERE u.user_id = ?`, customerId);
+export async function needsAdministratorSetup(db) {
+  return !(await db.getFirstAsync(`SELECT u.user_id FROM users u JOIN customer_credentials c ON c.user_id = u.user_id WHERE u.role = 'admin' AND (EXISTS (SELECT 1 FROM app_settings WHERE key = 'demo_accounts_removed_v2') OR NOT (${legacyDemoPredicate})) LIMIT 1`));
 }
-
-export async function needsDemoOwnerSetup(db) {
-  return (await db.getFirstAsync('SELECT COUNT(*) AS count FROM customer_credentials')).count === 0;
-}
-export async function saveUser(db, form, id, administratorId = 3) {
-  if (!form.name.trim() || !form.contact.trim()) throw new Error('Name and contact are required.');
-  if (!['customer', 'supplier', 'admin'].includes(form.role)) throw new Error('Select a valid role.');
-  return transaction(db, async () => {
-    const actor = await db.getFirstAsync('SELECT role, demo_access FROM users WHERE user_id = ?', administratorId);
-    if (!actor || (actor.role !== 'admin' && !actor.demo_access)) throw new Error('Administrator access is required.');
-    if (id) {
-      const account = await db.getFirstAsync('SELECT role, demo_access FROM users WHERE user_id = ?', id);
-      if (account?.demo_access && account.role !== form.role) throw new Error('UserDemo keeps access to all demo roles.');
-    }
-    if (id && Number(id) <= 3) {
-      const old = await db.getFirstAsync('SELECT * FROM users WHERE user_id = ?', id);
-      if (form.role !== old.role) throw new Error('The three demo account roles are fixed.');
-    }
-    if (id) await db.runAsync('UPDATE users SET name = ?, contact = ?, role = ? WHERE user_id = ?', form.name.trim(), form.contact.trim(), form.role, id);
-    else await db.runAsync('INSERT INTO users (name, contact, role) VALUES (?, ?, ?)', form.name.trim(), form.contact.trim(), form.role);
-    await audit(db, id ? 'User updated' : 'User created', form.name.trim());
-  });
+async function protectLastAdministrator(db, id) {
+ const account = await db.getFirstAsync("SELECT u.role FROM users u JOIN customer_credentials c ON c.user_id = u.user_id WHERE u.user_id = ?", id);
+ if (account?.role === 'admin') {
+  const others = await db.getFirstAsync("SELECT COUNT(*) AS count FROM users u JOIN customer_credentials c ON c.user_id = u.user_id WHERE u.role = 'admin' AND u.user_id <> ?", id);
+  if (!others.count) throw new Error('The last administrator cannot be removed or assigned another role.');
+ }
 }
 export async function deleteUser(db, id) {
-  if (Number(id) <= 3) throw new Error('The demo accounts are required and cannot be deleted.');
   return transaction(db, async () => {
-    const account = await db.getFirstAsync('SELECT demo_access FROM users WHERE user_id = ?', id);
-    if (account?.demo_access) throw new Error('The UserDemo owner account cannot be deleted.');
+    await protectLastAdministrator(db, id);
     const refs = await db.getFirstAsync(`SELECT (SELECT COUNT(*) FROM equipment WHERE supplier_id = ?) +
       (SELECT COUNT(*) FROM reservations WHERE customer_id = ?) AS count`, id, id);
     if (refs.count) throw new Error('This user has linked records and cannot be deleted.');
@@ -541,7 +533,7 @@ export async function deleteUser(db, id) {
 export async function getAdminOverview(db, today = localToday()) {
   if (!validDate(today)) throw new Error('Choose a valid overview date.');
   const stats = await db.getFirstAsync(`SELECT
-    (SELECT COUNT(*) FROM users) AS users,
+    (SELECT COUNT(*) FROM users u WHERE ${visibleAdminCustomerPredicate}) AS users,
     (SELECT COUNT(*) FROM equipment WHERE is_active = 1) AS equipment,
     (SELECT COUNT(*) FROM reservations) AS reservations,
     (SELECT COALESCE(SUM(total_amount), 0) FROM reservations WHERE status IN ('confirmed','completed')) AS value`);
@@ -569,10 +561,10 @@ export async function getAdminReportSummary(db, period = 'Day', today = localTod
     GROUP BY e.equipment_id ORDER BY rentals DESC, units DESC, e.name ASC`, start, end);
   return { ...totals, gear };
 }
-export async function getCart(db, customerId = 1) {
+export async function getCart(db, customerId = null) {
   return db.getAllAsync('SELECT e.*, c.quantity FROM cart_items c JOIN equipment e ON e.equipment_id = c.equipment_id WHERE e.is_active = 1 AND c.customer_id = ?', customerId);
 }
-export async function persistCart(db, items, customerId = 1) {
+export async function persistCart(db, items, customerId = null) {
   return transaction(db, async () => {
     await db.runAsync('DELETE FROM cart_items WHERE customer_id = ?', customerId);
     for (const item of items) await db.runAsync('INSERT INTO cart_items (customer_id, equipment_id, quantity) VALUES (?, ?, ?)', customerId, item.equipment_id, item.quantity);

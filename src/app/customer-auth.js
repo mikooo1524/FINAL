@@ -9,13 +9,17 @@ import { colors } from '../theme';
 export default function CustomerAuthScreen() {
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams();
-  const setupOwner = params.setup === 'owner';
+  const setupAdministrator = params.setup === 'administrator';
   const { customer, signIn, register } = useApp();
-  const [creating, setCreating] = useState(setupOwner || params.mode === 'signup');
-  const [form, setForm] = useState({ name: setupOwner ? 'UserDemo' : '', contact: '', email: setupOwner ? 'userdemo@gmail.com' : '', password: '', confirmPassword: '' });
+  const [creating, setCreating] = useState(setupAdministrator || params.mode === 'signup');
+  const [form, setForm] = useState({ name: '', contact: '', email: '', password: '', confirmPassword: '' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  function field(key, value) { setForm(current => ({ ...current, [key]: value })); }
+  function field(key, value) {
+    if (key === 'contact') value = value.replace(/[^0-9]/g, '');
+    if (creating && (key === 'password' || key === 'confirmPassword')) value = value.replace(/[^A-Za-z0-9]/g, '');
+    setForm(current => ({ ...current, [key]: value }));
+  }
   function switchMode(value) {
     setCreating(value); setError(''); field('password', ''); field('confirmPassword', '');
   }
@@ -30,19 +34,19 @@ export default function CustomerAuthScreen() {
     if (creating && form.password !== form.confirmPassword) { setError('Passwords do not match.'); return; }
     setBusy(true);
     try {
-      if (creating) await register(form, setupOwner);
+      if (creating) await register(form, setupAdministrator);
       else await signIn(form.email, form.password);
     } catch (reason) { setError(reason.message); }
     finally { setBusy(false); }
   }
-  if (customer) return <Redirect href={customer.demo_access ? '/role-selection' : customer.role === 'supplier' ? '/(supplier)' : customer.role === 'admin' ? '/(admin)' : '/(customer)'} />;
+  if (customer) return <Redirect href={customer.role === 'supplier' ? '/(supplier)' : customer.role === 'admin' ? '/(admin)' : '/(customer)'} />;
   return <KeyboardAvoidingView style={[styles.overlay, { paddingTop: Math.max(20, insets.top), paddingBottom: Math.max(20, insets.bottom) }]}
     behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
     <Pressable accessibilityRole="button" accessibilityLabel="Dismiss customer sign in" disabled={busy} onPress={close} style={styles.backdrop} />
     <View style={styles.popup} accessibilityViewIsModal role="dialog" aria-modal accessibilityLabel={creating ? 'Create customer account' : 'Customer sign in'}>
     <ScrollView contentContainerStyle={styles.content} style={{ flexGrow: 0 }} keyboardShouldPersistTaps="handled">
     <View style={styles.header}>
-      <Text style={styles.title}>{setupOwner ? 'Set up UserDemo' : creating ? 'Create your account' : 'Welcome back'}</Text>
+      <Text style={styles.title}>{setupAdministrator ? 'Set up administrator' : creating ? 'Create your account' : 'Welcome back'}</Text>
       <Pressable accessibilityRole="button" accessibilityLabel="Close customer sign in" disabled={busy} hitSlop={8} onPress={close} style={styles.close}>
         <View pointerEvents="none" style={{ width: 12, height: 12 }}>
           <View style={[styles.closeLine, { transform: [{ rotate: '45deg' }] }]} />
@@ -50,17 +54,17 @@ export default function CustomerAuthScreen() {
         </View>
       </Pressable>
     </View>
-    <Text style={styles.lead}>{setupOwner ? 'This owner account can switch all demo roles and assign account roles.' : creating ? 'Create your account. New accounts start as customers.' : 'Sign in to your account.'}</Text>
+    <Text style={styles.lead}>{setupAdministrator ? 'Create your administrator account to manage users and assign roles.' : creating ? 'Create your account. New accounts start as customers.' : 'Sign in to your account.'}</Text>
       {creating && <>
-        <Field label="Full name" value={form.name} onChangeText={value => field('name', value)} autoComplete="name" editable={!busy && !setupOwner} />
-        <Field label="Contact number" value={form.contact} onChangeText={value => field('contact', value)} keyboardType="phone-pad" autoComplete="tel" editable={!busy} />
+        <Field label="Full name" value={form.name} onChangeText={value => field('name', value)} autoComplete="name" editable={!busy} />
+        <Field label="Contact number" value={form.contact} onChangeText={value => field('contact', value)} keyboardType="number-pad" inputMode="numeric" autoComplete="tel" editable={!busy} />
       </>}
       <Field label="Email" value={form.email} onChangeText={value => field('email', value)} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} autoComplete="email" editable={!busy} />
-      <Field label="Password" value={form.password} onChangeText={value => field('password', value)} secureTextEntry autoCapitalize="none" autoCorrect={false} autoComplete={creating ? 'new-password' : 'current-password'} editable={!busy} placeholder={creating ? 'At least 8 characters' : ''} maxLength={128} />
+      <Field label="Password" value={form.password} onChangeText={value => field('password', value)} secureTextEntry autoCapitalize="none" autoCorrect={false} autoComplete={creating ? 'new-password' : 'current-password'} editable={!busy} maxLength={128} />
       {creating && <Field label="Confirm password" value={form.confirmPassword} onChangeText={value => field('confirmPassword', value)} secureTextEntry autoCapitalize="none" autoCorrect={false} editable={!busy} maxLength={128} />}
       {!!error && <Text style={styles.error} accessibilityRole="alert">{error}</Text>}
       <View style={[styles.actions, creating && { flexDirection: 'column-reverse' }]}>
-        {!setupOwner && <Pressable accessibilityRole="button" disabled={busy} onPress={() => creating ? switchMode(false) : submit()}
+        {!setupAdministrator && <Pressable accessibilityRole="button" disabled={busy} onPress={() => creating ? switchMode(false) : submit()}
           style={({ pressed }) => [styles.authButton, styles.signInButton, pressed && styles.pressed, busy && styles.disabled]}>
           {busy && !creating ? <ActivityIndicator color="#2FAFA4" /> : <Text style={styles.signInText}>Sign in</Text>}
         </Pressable>}

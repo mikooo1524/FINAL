@@ -1,3 +1,4 @@
+import SwitchRoleButton from './SwitchRoleButton';
 import { Alert } from './feedback';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -31,7 +32,7 @@ import { colors, radius, shadow } from './theme';
 import { formatCompactNumber } from './numberFormatting';
 
 export function SupplierDashboardScreen({ navigation }) {
-  const { equipment, db, refreshEquipment, canSwitchRoles } = useApp();
+  const { equipment, db, refreshEquipment } = useApp();
   const [reservations, setReservations] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -73,10 +74,7 @@ export function SupplierDashboardScreen({ navigation }) {
         <View style={styles.actionCopy}><Text style={styles.actionTitle}>Review reservations</Text><Text style={styles.actionText}>View booking schedules and customer details.</Text></View>
         <Text style={styles.arrow}>›</Text>
       </Pressable>
-
-      {canSwitchRoles && <Pressable onPress={() => navigation.getParent()?.navigate('RoleSelect')} style={styles.switchRole}>
-        <Text style={styles.switchRoleText}>⇄ Switch demo role</Text>
-      </Pressable>}
+    <SwitchRoleButton />
     </ScrollView>
   );
 }
@@ -159,7 +157,7 @@ function InventoryEditor({ item }) {
 
 // One controlled form supports both CREATE and UPDATE by equipment ID.
 export function EquipmentFormScreen({ navigation, route }) {
-  const { db, refreshEquipment } = useApp();
+  const { db, customer, refreshEquipment } = useApp();
   const equipmentId = route.params?.equipmentId;
   const [form, setForm] = useState({ name: '', category: '', description: '', dailyRate: '', totalQuantity: '', imageRef: '🎪' });
   const [errors, setErrors] = useState({});
@@ -210,7 +208,7 @@ export function EquipmentFormScreen({ navigation, route }) {
 
     setSaving(true);
     try {
-      await saveEquipment(db, form, equipmentId);
+      await saveEquipment(db, form, equipmentId, customer?.user_id);
       await refreshEquipment();
       Alert.alert('Saved', equipmentId ? 'Equipment listing updated.' : 'Equipment listing created.', [
         { text: 'OK', onPress: () => navigation.goBack() },
@@ -443,8 +441,6 @@ const styles = StyleSheet.create({
   actionTitle: { color: colors.navy, fontWeight: '900', fontSize: 16, lineHeight: 21 },
   actionText: { color: colors.muted, fontSize: 13, lineHeight: 18, marginTop: 4 },
   arrow: { color: colors.tealDark, fontSize: 30 },
-  switchRole: { alignItems: 'center', padding: 18, marginTop: 10 },
-  switchRoleText: { color: colors.tealDark, fontWeight: '800' },
   listHeader: { width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-start', marginBottom: 16 },
   pageTitle: { color: colors.text, fontSize: 24, fontWeight: '900' },
   pageLead: { color: colors.muted, fontSize: 13, lineHeight: 19, marginTop: 4, marginBottom: 16 },

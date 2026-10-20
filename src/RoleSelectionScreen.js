@@ -30,7 +30,7 @@ function ChairIcon() {
 
 export default function RoleSelectionScreen({ navigation }) {
   const { width } = useWindowDimensions();
-  const { customer, canAccessCustomer, canAccessSupplier, canAccessAdmin, ownerSetupNeeded } = useApp();
+  const { customer, canAccessCustomer, canAccessSupplier, canAccessAdmin, administratorSetupNeeded } = useApp();
   const availableRoles = roles.filter(role => role.key === 'CustomerTabs' ? canAccessCustomer : role.key === 'SupplierTabs' ? canAccessSupplier : canAccessAdmin);
   const openAuth = mode => navigation.navigate('CustomerAuth', { mode });
   return <SafeAreaView style={styles.safe}>
@@ -42,8 +42,8 @@ export default function RoleSelectionScreen({ navigation }) {
           <Text style={[styles.logo, width < 360 && { fontSize: 43 }]}>Event<Text style={styles.logoAccent}>Gear</Text></Text>
           <Text style={styles.tagline}>Book event equipment with ease.</Text>
         </View>
-        <View style={[styles.panel, customer?.demo_access && styles.demoPanel]}>
-          {!customer?.demo_access && <View style={styles.features}>
+        <View style={styles.panel}>
+          <View style={styles.features}>
             <View style={styles.feature}>
               <View style={styles.featureIcon}><ChairIcon /></View>
               <Text style={styles.featureTitle}>Wide Selection</Text>
@@ -54,9 +54,9 @@ export default function RoleSelectionScreen({ navigation }) {
               <Text style={styles.featureTitle}>Easy Booking</Text>
               <Text style={styles.featureDescription}>{'Reserve in just\na few taps.'}</Text>
             </View>
-          </View>}
-          <View style={[styles.actions, customer?.demo_access && styles.demoActions]}>
-            {!customer && !ownerSetupNeeded && <>
+          </View>
+          <View style={styles.actions}>
+            {!customer && !administratorSetupNeeded && <>
               <Pressable accessibilityRole="button" onPress={() => openAuth('signup')} style={({ pressed }) => [styles.button, styles.primaryButton, pressed && styles.pressed]}>
                 <Text style={styles.primaryText}>Create an account</Text>
               </Pressable>
@@ -64,10 +64,10 @@ export default function RoleSelectionScreen({ navigation }) {
                 <Text style={styles.secondaryText}>Sign in</Text>
               </Pressable>
             </>}
-            {!customer && ownerSetupNeeded && <Pressable accessibilityRole="button" onPress={() => navigation.navigate('CustomerAuth', { setup: 'owner' })} style={({ pressed }) => [styles.button, styles.primaryButton, pressed && styles.pressed]}>
-              <Text style={styles.primaryText}>Set up UserDemo</Text>
+            {!customer && administratorSetupNeeded && <Pressable accessibilityRole="button" onPress={() => navigation.navigate('CustomerAuth', { setup: 'administrator' })} style={({ pressed }) => [styles.button, styles.primaryButton, pressed && styles.pressed]}>
+              <Text style={styles.primaryText}>Set up administrator</Text>
             </Pressable>}
-            {!!customer && availableRoles.map(role => <Pressable key={role.key} accessibilityRole="button" onPress={() => navigation.navigate(role.key)} style={({ pressed }) => [styles.roleCard, customer.demo_access && styles.demoRoleCard, pressed && styles.pressed]}>
+            {!!customer && availableRoles.map(role => <Pressable key={role.key} accessibilityRole="button" onPress={() => navigation.navigate(role.key)} style={({ pressed }) => [styles.roleCard, pressed && styles.pressed]}>
               <View style={styles.roleIcon}><OverviewGlyph name={role.icon} size={28} /></View>
               <View style={styles.roleCopy}><Text style={styles.roleTitle}>{role.title}</Text><Text style={styles.roleDescription}>{role.description}</Text></View>
               <Text style={styles.chevron}>›</Text>
@@ -97,9 +97,6 @@ const styles = StyleSheet.create({
   featureTitle: { color: colors.navy, fontWeight: '800', fontSize: 16, textAlign: 'center' },
   featureDescription: { color: colors.muted, fontSize: 13, lineHeight: 20, textAlign: 'center', marginTop: 7 },
   actions: { marginTop: 36, gap: 14, width: '100%', maxWidth: 490, alignSelf: 'center' },
-  demoPanel: { paddingTop: 24, paddingBottom: 24 },
-  demoActions: { marginTop: 0, flexGrow: 1, gap: 18 },
-  demoRoleCard: { flexGrow: 1, minHeight: 100, paddingVertical: 22 },
   button: { minHeight: 56, borderRadius: 32, paddingVertical: 16, paddingHorizontal: 20, alignItems: 'center', justifyContent: 'center' },
   primaryButton: { backgroundColor: '#2FAFA4', shadowColor: '#2FAFA4', shadowOpacity: 0.2, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 2 },
   secondaryButton: { borderWidth: 1.5, borderColor: '#BECAD8' },

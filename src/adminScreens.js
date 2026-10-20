@@ -1,15 +1,16 @@
+import SwitchRoleButton from './SwitchRoleButton';
 import { useCallback, useRef, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useApp } from './AppContext';
-import { deleteUser, getAdminOverview, getAdminReportSummary, getUsers, saveUser } from './database';
+import { deleteUser, getAdminOverview, getAdminReportSummary, getAdminCustomers } from './database';
 import { Alert } from './feedback';
-import { EmptyState, EquipmentImage, Field, Money, PrimaryButton, SectionTitle, StatusPill } from './components';
+import { EmptyState, EquipmentImage, Money, PrimaryButton, SectionTitle, StatusPill } from './components';
 import { colors } from './theme';
 import OverviewIcon, { OverviewGlyph, overviewAccent } from './OverviewIcon';
 import { formatCompactNumber } from './numberFormatting';
 
-// Focus refresh keeps administrator totals synchronized with other demo roles.
+// Focus refresh keeps administrator totals synchronized with equipment and booking changes.
 function useOverview(period = null) {
   const { db } = useApp();
   const [data, setData] = useState(null);
@@ -33,7 +34,6 @@ function OverviewFallback({ loading, error, load }) {
   return <EmptyState title={loading ? 'Loading overview…' : 'Could not load overview'} message={error || 'Reading saved records.'} action={error ? 'Retry' : undefined} onAction={load} />;
 }
 export function AdminDashboardScreen({ navigation }) {
-  const { canSwitchRoles } = useApp();
   const { width } = useWindowDimensions();
   const state = useOverview();
   if (!state.data) return <OverviewFallback {...state} />;
@@ -44,12 +44,10 @@ export function AdminDashboardScreen({ navigation }) {
     <View style={styles.card}><Text style={styles.heading}>Confirmed rental value</Text><Money value={stats.value} style={{ fontSize: 28, marginTop: 8 }} />
       <Text style={styles.muted}>Confirmed and completed bookings. This is rental value, not collected payments.</Text></View>
     <SectionTitle title="Management" />
-    {[['users', '👥 User directory', 'Create, edit, and remove local user records.'], ['reservations', '📋 Reservations', 'Review customer bookings and update progress.'], ['reports', '📊 Reports & activity', 'Review status totals and recent database actions.']].map(([route, title, text]) =>
+    {[['users', '👥 User directory', 'View and remove customer accounts.'], ['reservations', '📋 Reservations', 'Review customer bookings and update progress.'], ['reports', '📊 Reports & activity', 'Review status totals and recent database actions.']].map(([route, title, text]) =>
       <Pressable key={route} style={styles.card} onPress={() => navigation.navigate(route)}><Text style={styles.heading}>{title} ›</Text><Text style={styles.muted}>{text}</Text></Pressable>)}
-    {canSwitchRoles && <Pressable accessibilityRole="button" onPress={() => navigation.navigate('RoleSelect')} style={styles.switchRole}>
-      <Text style={styles.switchRoleText}>⇄ Switch demo role</Text>
-    </Pressable>}
-  </ScrollView>;
+  <SwitchRoleButton />
+    </ScrollView>;
 }
 
 function TodayOverview({ data, navigation }) {
@@ -78,7 +76,7 @@ function TodayOverview({ data, navigation }) {
       </View>
     </View>
     <View style={styles.todayGrid}>{[
-      ['Users', stats.users, 'users', 'users'],
+      ['Customers', stats.users, 'users', 'users'],
       ['Equipment', stats.equipment, 'cube'],
       ['Today’s bookings', todayStats.bookings, 'calendar', 'reservations'],
       ['Pending approvals', todayStats.pending, 'clock', 'reservations'],
@@ -95,62 +93,34 @@ function TodayOverview({ data, navigation }) {
     </Pressable>)}</View>
   </View>;
 }
-const blankUser = { name: '', contact: '', role: 'customer', isOwner: false };
 export function AdminUsersScreen() {
-  const list = useRef(null);
-  const { db, customer, signOut, refreshCustomer } = useApp();
+  const { db, customer, signOut } = useApp();
   const [users, setUsers] = useState([]);
-  const [form, setForm] = useState(blankUser);
-  const [editing, setEditing] = useState(null);
-  const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const load = useCallback(async () => {
     setRefreshing(true);
     try {
-      const savedUsers = await getUsers(db);
-      setUsers(savedUsers.filter(user => user.user_id > 3 && !user.demo_access));
+      const savedUsers = await getAdminCustomers(db);
+      setUsers(savedUsers);
     } catch (error) { Alert.alert('Could not load users', error.message); }
     finally { setRefreshing(false); }
   }, [db]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
-  function reset() { setForm(blankUser); setEditing(null); }
-  async function submit() {
-    if (saving || editing === null) return;
-    setSaving(true);
-    try {
-      await saveUser(db, form, editing, customer?.user_id || -1);
-      await load(); reset();
-      if (editing === customer?.user_id) await refreshCustomer();
-      Alert.alert('User saved', 'The account details and assigned role were updated.');
-    }
-    catch (error) { Alert.alert('Could not save user', error.message); }
-    finally { setSaving(false); }
-  }
   function remove(user) {
     Alert.alert('Delete user?', `Remove ${user.name}? This action cannot be undone.`, [{ text: 'Keep', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: async () => {
-        await deleteUser(db, user.user_id);
+        try { await deleteUser(db, user.user_id); }
+        catch (error) { Alert.alert('Could not delete user', error.message); return; }
         if (customer?.user_id === user.user_id) signOut();
-        await load(); if (editing === user.user_id) reset(); Alert.alert('User deleted', 'The user record was removed.');
+        await load(); Alert.alert('User deleted', 'The user record was removed.');
       } }]);
   }
-  // Show the editor in the list header only after selecting an existing account.
-  return <FlatList ref={list} style={styles.page} contentContainerStyle={styles.content} data={users}
+  return <FlatList style={styles.page} contentContainerStyle={styles.content} data={users}
     keyExtractor={item => String(item.user_id)} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load} />}
-    ListHeaderComponent={<>
-      {editing !== null && <View style={styles.card}><Text style={styles.heading}>{`Edit user #${editing}`}</Text>
-        <Field label="Name" value={form.name} onChangeText={name => setForm(f => ({ ...f, name }))} />
-        <Field label="Contact / email" value={form.contact} onChangeText={contact => setForm(f => ({ ...f, contact }))} />
-        <Text style={styles.heading}>Role</Text><View style={styles.roles}>{['customer', 'supplier', 'admin'].map(role =>
-          <Pressable key={role} accessibilityRole="button" accessibilityLabel={`Assign ${role} role`} disabled={form.isOwner || (editing && editing <= 3)} onPress={() => setForm(f => ({ ...f, role }))}
-            style={[styles.chip, form.role === role && styles.active]}><Text style={{ color: form.role === role ? '#FFFFFF' : colors.navy }}>{role}</Text></Pressable>)}</View>
-        <PrimaryButton title="Save changes" onPress={submit} loading={saving} />
-        <PrimaryButton title="Cancel edit" onPress={reset} variant="secondary" style={{ marginTop: 8 }} />
-      </View>}<SectionTitle title={`Saved users (${users.length})`} /></>}
+    ListHeaderComponent={<SectionTitle title={`Saved customers (${users.length})`} />}
     renderItem={({ item }) => <View style={styles.card}><Text style={styles.heading}>{item.name}</Text><Text style={styles.muted}>{item.contact} • {item.role}</Text>
-      {!!item.email && <><Text style={styles.muted}>Email: {item.email}</Text><Text style={styles.small}>{item.demo_access ? 'UserDemo owner · All demo roles' : `Assigned role: ${item.role}`} · {item.registered_at}</Text></>}
-      <View style={styles.roles}><PrimaryButton title="Edit" variant="secondary" onPress={() => { list.current?.scrollToOffset({ offset: 0, animated: true }); setEditing(item.user_id); setForm({ name: item.name, contact: item.contact || '', role: item.role, isOwner: !!item.demo_access }); }} />
-        <PrimaryButton title={item.user_id <= 3 || item.demo_access ? 'Protected' : 'Delete'} disabled={item.user_id <= 3 || !!item.demo_access} variant="danger" onPress={() => remove(item)} /></View></View>} />;
+      {!!item.email && <Text style={styles.muted}>Email: {item.email}</Text>}
+      <View style={styles.roles}><PrimaryButton title="Delete" variant="danger" onPress={() => remove(item)} /></View></View>} />;
 }
 export function AdminReportsScreen() {
   const [period, setPeriod] = useState('Day');
@@ -228,8 +198,6 @@ function ReportSummary({ summary, period, onPeriodChange }) {
 }
 
 const styles = StyleSheet.create({
-  switchRole: { alignItems: 'center', padding: 18, marginTop: 10 },
-  switchRoleText: { color: colors.tealDark, fontWeight: '800' },
   dashboardMobileContent: { paddingHorizontal: 10, paddingTop: 10 },
   todayPanel: { backgroundColor: '#EFFAFA', borderWidth: 1, borderColor: '#D7EFF0', borderRadius: 24, padding: 16, marginBottom: 16 },
   todayIntro: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 22 },

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { pbkdf2Sync } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { DatabaseSync } from 'node:sqlite';
-import * as api from '../src/database.js';
+import * as production from '../src/database.js';
 import { equipmentPhotoFromAsset, isEquipmentPhoto } from '../src/equipmentPhoto.js';
 
 // Execute the actual production SQL in SQLite. This adapter only translates
@@ -22,20 +22,45 @@ function connection() {
     },
   };
 }
+// Production starts empty; inventory tests create their own regular accounts and catalog.
+const fixtures = new WeakSet();
+const api = {
+ ...production,
+ async initializeDatabase(db) {
+  await production.initializeDatabase(db);
+  if (fixtures.has(db)) return;
+  fixtures.add(db);
+  await db.execAsync(`INSERT INTO users (user_id,name,contact,role) VALUES
+   (1,'Fixture Customer','111','customer'),(2,'Fixture Supplier','222','supplier'),(3,'Fixture Admin','333','admin');`);
+  for (const [name,quantity,rate] of [['Sound System',5,2500],['Party Lights',12,850],['Tables',30,300],['Chairs',150,35],['Tent',8,1200],['Projector',4,1800]])
+   await db.runAsync("INSERT INTO equipment (supplier_id,name,category,description,daily_rate,total_quantity) VALUES (2,?,'Audio','Fixture equipment',?,?)",name,rate,quantity);
+ },
+ saveEquipment:(db,f,id,actor=2)=>production.saveEquipment(db,f,id,actor),
+ createReservation:(db,b,id=1)=>production.createReservation(db,b,id),
+ getCustomerRentals:(db,id=1)=>production.getCustomerRentals(db,id),
+ updateReservationContact:(db,id,contact,note,start,end,customerId=1)=>production.updateReservationContact(db,id,contact,note,start,end,customerId),
+ getCart:(db,id=1)=>production.getCart(db,id),
+ persistCart:(db,items,id=1)=>production.persistCart(db,items,id),
+};
+// Inspect persisted records directly when testing storage and migrations.
+function readUserRecords(db) {
+ return db.getAllAsync(`SELECT u.*, c.email, c.created_at AS registered_at FROM users u
+ LEFT JOIN customer_credentials c ON c.user_id = u.user_id ORDER BY u.user_id`);
+}
 const form = { name: 'Test Speaker', category: 'Audio', description: 'Portable speaker', dailyRate: '100.50', totalQuantity: '5', imageRef: '🎤' };
 const booking = item => ({ startDate: '2099-01-01', endDate: '2099-01-02', contact: '09123456789', note: 'Test event', paymentMethod: 'Cash on pickup', items: [{ ...item, quantity: 2 }] });
 
-const customerForm = { name: 'Test Customer', contact: '09123456789', email: 'customer@example.com', password: 'TestPassword123!' };
+const customerForm = { name: 'Test Customer', contact: '09123456789', email: 'customer@example.com', password: 'TestPassword123' };
 
 test('customer registration stores a hash and exposes only profile details to Admin Users', async () => {
   const db = connection(); await api.initializeDatabase(db);
   for (const invalid of [{ ...customerForm, email: 'invalid' }, { ...customerForm, name: '' }, { ...customerForm, contact: '' }, { ...customerForm, password: 'short' }])
     await assert.rejects(api.registerCustomer(db, invalid));
-  assert.equal((await api.getUsers(db)).length, 3);
+  assert.equal((await readUserRecords(db)).length, 3);
   const user = await api.registerCustomer(db, { ...customerForm, email: ' Customer@Example.COM ' });
   assert.equal(user.role, 'customer'); assert.equal(user.email, 'customer@example.com');
   await api.initializeDatabase(db);
-  const adminUser = (await api.getUsers(db)).find(row => row.user_id === user.user_id);
+  const adminUser = (await readUserRecords(db)).find(row => row.user_id === user.user_id);
   assert.equal(adminUser.name, customerForm.name); assert.equal(adminUser.contact, customerForm.contact);
   assert.equal(adminUser.email, 'customer@example.com'); assert.ok(adminUser.registered_at);
   assert.equal('password_hash' in adminUser, false);
@@ -47,25 +72,38 @@ test('customer registration stores a hash and exposes only profile details to Ad
   assert.equal(signedIn.user_id, user.user_id); assert.equal('password_hash' in signedIn, false);
   await assert.rejects(api.signInCustomer(db, customerForm.email, 'incorrect'), /Email or password is incorrect/);
   await assert.rejects(api.signInCustomer(db, 'nobody@example.com', customerForm.password), /Email or password is incorrect/);
-  await assert.rejects(api.saveUser(db, { ...adminUser, role: 'admin' }, user.user_id, user.user_id), /Administrator access/);
-  await api.saveUser(db, { ...adminUser, name: 'Updated Customer' }, user.user_id);
-  assert.equal((await api.signInCustomer(db, customerForm.email, customerForm.password)).name, 'Updated Customer');
+});
+
+test('registration rejects contact letters and password symbols before saving an account', async () => {
+ const db=connection(); await production.initializeDatabase(db);
+ for (const contact of ['0912abc3456','0912-3456789','+639123456789','0912 3456789']) {
+  await assert.rejects(production.registerCustomer(db,{...customerForm,contact}),/digits only/);
+ }
+ for (const password of ['Password123!','Password 123','Password123_','Password123\u00e9']) {
+  await assert.rejects(production.registerCustomer(db,{...customerForm,password}),/letters and numbers only/);
+ }
+ assert.equal((await db.getFirstAsync('SELECT COUNT(*) AS count FROM users')).count,0);
+ assert.equal((await db.getFirstAsync('SELECT COUNT(*) AS count FROM customer_credentials')).count,0);
+ const user=await production.registerCustomer(db,customerForm);
+ assert.equal(user.contact,'09123456789');
+ assert.equal((await production.signInCustomer(db,user.email,customerForm.password)).user_id,user.user_id);
 });
 
 test('legacy passwords migrate only after a successful sign in, preserving profile and access', async () => {
   const db = connection(); await api.initializeDatabase(db);
   const user = await api.registerCustomer(db, customerForm);
+  const legacyPassword = `${customerForm.password}!@#`;
   const salt = '0123456789abcdef0123456789abcdef';
-  const hash = pbkdf2Sync(customerForm.password, Buffer.from(salt, 'hex'), 600000, 32, 'sha256').toString('hex');
+  const hash = pbkdf2Sync(legacyPassword, Buffer.from(salt, 'hex'), 600000, 32, 'sha256').toString('hex');
   const legacy = `pbkdf2-sha256$600000$${salt}$${hash}`;
   await db.runAsync('UPDATE customer_credentials SET password_hash = ? WHERE user_id = ?', legacy, user.user_id);
   await assert.rejects(api.signInCustomer(db, customerForm.email, 'incorrect'));
   assert.equal((await db.getFirstAsync('SELECT password_hash FROM customer_credentials WHERE user_id = ?', user.user_id)).password_hash, legacy);
-  const profile = await api.signInCustomer(db, customerForm.email, customerForm.password);
+  const profile = await api.signInCustomer(db, customerForm.email, legacyPassword);
   assert.equal(profile.user_id, user.user_id); assert.equal(profile.role, 'customer');
   const migrated = (await db.getFirstAsync('SELECT password_hash FROM customer_credentials WHERE user_id = ?', user.user_id)).password_hash;
   assert.ok(migrated.startsWith('bcrypt-hmac-sha256$$2b$10$'));
-  assert.equal((await api.signInCustomer(db, customerForm.email, customerForm.password)).user_id, user.user_id);
+  assert.equal((await api.signInCustomer(db, customerForm.email, legacyPassword)).user_id, user.user_id);
   assert.equal((await db.getFirstAsync('SELECT password_hash FROM customer_credentials WHERE user_id = ?', user.user_id)).password_hash, migrated);
 });
 
@@ -104,40 +142,145 @@ test('simultaneous registrations with the same email create only one customer', 
   const db = connection(); await api.initializeDatabase(db);
   const results = await Promise.allSettled([api.registerCustomer(db, customerForm), api.registerCustomer(db, customerForm)]);
   assert.equal(results.filter(row => row.status === 'fulfilled').length, 1);
-  assert.equal((await api.getUsers(db)).length, 4);
+  assert.equal((await readUserRecords(db)).length, 4);
   assert.equal((await db.getFirstAsync('SELECT COUNT(*) AS count FROM customer_credentials')).count, 1);
 });
 
-test('UserDemo alone can switch all roles and assign an ordinary account a single role', async () => {
-  const db = connection(); await api.initializeDatabase(db);
-  assert.equal(await api.needsDemoOwnerSetup(db), true);
-  const owner = await api.registerCustomer(db, { ...customerForm, name: 'UserDemo', email: 'owner@example.test' }, undefined, true);
-  assert.equal(owner.demo_access, 1);
-  assert.equal(await api.needsDemoOwnerSetup(db), false);
-  const regular = await api.registerCustomer(db, { ...customerForm, name: 'UserDemo', email: 'regular@example.test', role: 'admin', demo_access: 1 });
-  assert.equal(regular.role, 'customer'); assert.equal(regular.demo_access, 0);
-  await assert.rejects(api.registerCustomer(db, { ...customerForm, email: 'another-owner@example.test' }, undefined, true), /setup/);
-  await assert.rejects(api.saveUser(db, { ...regular, role: 'supplier' }, regular.user_id, regular.user_id), /Administrator access/);
-  await api.saveUser(db, { ...regular, role: 'supplier' }, regular.user_id, owner.user_id);
-  let account = await api.signInCustomer(db, regular.email, customerForm.password);
-  assert.equal(account.role, 'supplier'); assert.equal(account.demo_access, 0);
-  await api.saveUser(db, { ...regular, role: 'admin' }, regular.user_id, owner.user_id);
-  account = await api.signInCustomer(db, regular.email, customerForm.password);
-  assert.equal(account.role, 'admin'); assert.equal(account.demo_access, 0);
-  await api.saveUser(db, { ...regular, role: 'customer' }, regular.user_id, owner.user_id);
-  assert.equal((await api.getCustomerProfile(db, regular.user_id)).role, 'customer');
-  await assert.rejects(api.saveUser(db, { ...owner, role: 'supplier' }, owner.user_id, owner.user_id), /all demo roles/);
-  await assert.rejects(api.deleteUser(db, owner.user_id), /owner account/);
+test('fresh startup is empty and administrator setup grants only a regular admin role', async () => {
+ const db=connection(); await production.initializeDatabase(db); await production.initializeDatabase(db);
+ assert.equal((await readUserRecords(db)).length,0);
+ assert.equal((await production.getEquipment(db)).length,0);
+ assert.equal(await production.needsAdministratorSetup(db),true);
+ const admin=await production.registerCustomer(db,{...customerForm,name:'Real Administrator'},undefined,true);
+ assert.equal(admin.name,'Real Administrator'); assert.equal(admin.role,'admin');
+ assert.equal(await production.needsAdministratorSetup(db),false);
+ await assert.rejects(production.registerCustomer(db,{...customerForm,email:'other@example.test'},undefined,true),/setup/);
+ const regular=await production.registerCustomer(db,{...customerForm,email:'regular@example.test',role:'admin',demo_access:1});
+ assert.equal(regular.role,'customer'); assert.equal(regular.demo_access,undefined);
+ await assert.rejects(production.deleteUser(db,admin.user_id),/last administrator/);
+ await production.saveEquipment(db,form,undefined,admin.user_id);
+ assert.equal((await production.getEquipment(db))[0].supplier_id,admin.user_id);
+ await production.initializeDatabase(db);
+ assert.equal((await readUserRecords(db)).length,2);
+ // The migration must not delete a newly registered account that reuses a legacy name/email.
+ const reused=await production.registerCustomer(db,{...customerForm,name:'UserDemo',email:'userdemo@gmail.com'});
+ await production.initializeDatabase(db);
+ assert.equal((await production.signInCustomer(db,reused.email,customerForm.password)).user_id,reused.user_id);
+ assert.deepEqual(db.sql.prepare('PRAGMA foreign_key_check').all(),[]);
 });
 
-test('existing designated UserDemo is upgraded once without granting other customers demo access', async () => {
-  const db = connection(); await api.initializeDatabase(db);
-  const owner = await api.registerCustomer(db, { ...customerForm, name: 'UserDemo', email: 'userdemo@gmail.com' });
-  const regular = await api.registerCustomer(db, { ...customerForm, name: 'UserDemo', email: 'different@example.test' });
-  await db.runAsync("DELETE FROM app_settings WHERE key = 'demo_owner_migrated'");
-  await api.initializeDatabase(db); await api.initializeDatabase(db);
-  assert.equal((await api.getCustomerProfile(db, owner.user_id)).demo_access, 1);
-  assert.equal((await api.getCustomerProfile(db, regular.user_id)).demo_access, 0);
+test('administrator setup removes legacy demos and preserves equipment and booking history', async () => {
+ const db=connection(); await production.initializeDatabase(db);
+ await db.execAsync(`INSERT INTO users (user_id,name,contact,role,demo_access) VALUES
+ (1,'Demo Customer','0917 000 0001','customer',0),
+ (2,'EventGear Supplier','0917 000 0002','supplier',0),
+ (3,'Demo Administrator','admin@eventgear.local','admin',0),
+ (4,'UserDemo','09233434223','customer',1);`);
+ await db.runAsync("INSERT INTO customer_credentials (user_id,email,password_hash) VALUES (4,'userdemo@gmail.com','legacy')");
+ await production.saveEquipment(db,form,undefined,2);
+ const item=(await production.getEquipment(db))[0];
+ const reservation=await production.createReservation(db,booking(item),1);
+ await production.persistCart(db,[{...item,quantity:1}],4);
+ assert.equal(await production.needsAdministratorSetup(db),true);
+ const admin=await production.registerCustomer(db,{...customerForm,name:'Administrator'},undefined,true);
+ await production.initializeDatabase(db); await production.initializeDatabase(db);
+ assert.deepEqual((await readUserRecords(db)).map(u=>u.user_id),[admin.user_id]);
+ assert.equal((await production.getEquipment(db))[0].supplier_id,admin.user_id);
+ assert.equal((await production.getRentalDetails(db,reservation.reservationId)).reservation.customer_id,admin.user_id);
+ assert.equal((await production.getSupplierReservations(db)).length,1);
+ assert.equal((await production.getCart(db,4)).length,0);
+ assert.deepEqual(db.sql.prepare('PRAGMA foreign_key_check').all(),[]);
+});
+
+test('cleanup retries older migrations and removes UserDemo at ID 8 without deleting David accounts', async () => {
+ const db=connection(); await production.initializeDatabase(db);
+ await db.execAsync(`INSERT INTO users (user_id,name,contact,role,demo_access) VALUES
+ (1,'Demo Customer','changed contact','customer',0),
+ (2,'EventGear Supplier','changed contact','supplier',0),
+ (6,'David','666','customer',0),
+ (8,'UserDemo','888','customer',0),
+ (9,'david','999','admin',0);
+ INSERT INTO customer_credentials (user_id,email,password_hash) VALUES
+ (8,'different@example.test','legacy'), (9,'david@example.test','existing');
+ INSERT INTO app_settings (key,value) VALUES ('demo_accounts_removed','1');`);
+ await production.saveEquipment(db,form,undefined,2);
+ const item=(await production.getEquipment(db))[0];
+ const reservation=await production.createReservation(db,booking(item),8);
+ await production.initializeDatabase(db); await production.initializeDatabase(db);
+ assert.deepEqual((await readUserRecords(db)).map(u=>u.user_id),[6,9]);
+ assert.equal((await production.getEquipment(db))[0].supplier_id,9);
+ assert.equal((await production.getRentalDetails(db,reservation.reservationId)).reservation.customer_id,9);
+ assert.equal(await production.needsAdministratorSetup(db),false);
+ assert.deepEqual(db.sql.prepare('PRAGMA foreign_key_check').all(),[]);
+});
+
+test('requested David customer accounts are deleted on startup including credentials and carts', async () => {
+ const db=connection(); await production.initializeDatabase(db);
+ // Reproduce a pre-upgrade database with the exact identities from the viewer.
+ await db.execAsync(`DELETE FROM app_settings WHERE key = 'requested_customers_removed_20261020';
+ INSERT INTO users (user_id,name,contact,role) VALUES
+ (6,'David','938321320123','customer'),(9,'david','2313123123','customer'),
+ (10,'David','other contact','customer');
+ INSERT INTO customer_credentials (user_id,email,password_hash) VALUES
+ (6,'david6@example.test','old'),(9,'david9@example.test','old');`);
+ await production.initializeDatabase(db);
+ assert.deepEqual((await readUserRecords(db)).map(u=>u.user_id),[10]);
+ assert.equal((await db.getFirstAsync('SELECT COUNT(*) AS count FROM customer_credentials')).count,0);
+ // Completion prevents deleting a later account that happens to reuse an old identity.
+ await db.runAsync("INSERT INTO users (user_id,name,contact,role) VALUES (6,'David','938321320123','customer')");
+ await production.initializeDatabase(db);
+ assert.equal((await readUserRecords(db)).length,2);
+ assert.deepEqual(db.sql.prepare('PRAGMA foreign_key_check').all(),[]);
+});
+
+test('requested customers with bookings transfer history when administrator setup completes', async () => {
+ const db=connection(); await production.initializeDatabase(db);
+ await db.execAsync(`DELETE FROM app_settings WHERE key = 'requested_customers_removed_20261020';
+ INSERT INTO users (user_id,name,contact,role) VALUES
+ (6,'David','938321320123','customer'),(9,'david','2313123123','customer');`);
+ await production.saveEquipment(db,form,undefined,6);
+ const item=(await production.getEquipment(db))[0];
+ const reservation=await production.createReservation(db,booking(item),9);
+ await production.persistCart(db,[{...item,quantity:1}],6);
+ await production.initializeDatabase(db);
+ assert.deepEqual((await readUserRecords(db)).map(u=>u.user_id),[6,9]);
+ assert.equal(await production.needsAdministratorSetup(db),true);
+ const admin=await production.registerCustomer(db,{...customerForm,name:'Administrator'},undefined,true);
+ assert.deepEqual((await readUserRecords(db)).map(u=>u.user_id),[admin.user_id]);
+ assert.equal((await production.getEquipment(db))[0].supplier_id,admin.user_id);
+ assert.equal((await production.getRentalDetails(db,reservation.reservationId)).reservation.customer_id,admin.user_id);
+ assert.equal((await production.getCart(db,6)).length,0);
+ await production.initializeDatabase(db);
+ assert.deepEqual(db.sql.prepare('PRAGMA foreign_key_check').all(),[]);
+});
+
+test('admin customer directory and dashboard exclude admins, suppliers, and demo accounts', async () => {
+ const db=connection(); await production.initializeDatabase(db);
+ await db.execAsync(`INSERT INTO users (user_id,name,contact,role,demo_access) VALUES
+ (1,'Ordinary Customer','111','customer',0),
+ (2,'Ordinary Supplier','222','supplier',0),
+ (3,'Ordinary Admin','333','admin',0),
+ (20,'Demo Customer','20','customer',0),
+ (21,'EventGear Supplier','21','supplier',0),
+ (22,'Demo Administrator','22','admin',0),
+ (23,' UserDemo ','23','customer',0),
+ (24,'CUSTOMER DEMO','24','customer',0),
+ (25,'Supplier Demo','25','supplier',0),
+ (26,'Admin Demo','26','admin',0),
+ (27,'Custom preview account','27','customer',1),
+ (28,'Demond','28','customer',0);`);
+ const users=await production.getAdminCustomers(db);
+ assert.deepEqual(users.map(u=>u.user_id),[1,28]);
+ assert.equal((await production.getAdminOverview(db)).stats.users,users.length);
+ // Hiding accounts does not delete them or alter their profiles.
+ assert.equal((await db.getFirstAsync('SELECT COUNT(*) AS count FROM users')).count,12);
+ await db.runAsync("INSERT INTO users (name,contact,role,demo_access) VALUES ('Another preview','29','customer',1)");
+ assert.equal((await production.getAdminCustomers(db)).length,2);
+ assert.equal((await production.getAdminOverview(db)).stats.users,2);
+ await db.runAsync("UPDATE users SET role = 'admin' WHERE user_id = 28");
+ assert.deepEqual((await production.getAdminCustomers(db)).map(u=>u.user_id),[1]);
+ assert.equal((await production.getAdminOverview(db)).stats.users,1);
+ assert.equal((await db.getFirstAsync("SELECT role FROM users WHERE user_id = 3")).role,'admin');
 });
 
 test('legacy cart migration preserves the demo cart without assigning it to new accounts', async () => {
@@ -299,8 +442,8 @@ test('admin combines status and gear filters for all six gear types', async () =
 test('admin gear filtering preserves whole bookings across suppliers and archived gear', async () => {
   const db = connection(); await api.initializeDatabase(db);
   const [first, second] = await api.getEquipment(db);
-  await api.saveUser(db, { name: 'Another supplier', contact: '123', role: 'supplier' });
-  const supplier = (await api.getUsers(db)).find(row => row.name === 'Another supplier');
+  await db.runAsync("INSERT INTO users (name,contact,role) VALUES ('Another supplier','123','supplier')");
+  const supplier = (await readUserRecords(db)).find(row => row.name === 'Another supplier');
   await db.runAsync('UPDATE equipment SET supplier_id = ? WHERE equipment_id = ?', supplier.user_id, second.equipment_id);
   const result = await api.createReservation(db, { ...booking(first), items: [{ ...first, quantity: 2 }, { ...second, quantity: 1 }] });
   const filtered = await api.getAdminReservations(db, 'pending', second.equipment_id);
@@ -338,9 +481,9 @@ test('admin analytics separate confirmed and cancelled values without duplicatin
   assert.equal(report.statuses.find(row => row.status === 'completed').count, 1);
 });
 
-test('schema is idempotent and seeds all three roles', async () => {
+test('schema is idempotent with explicit fixtures', async () => {
   const db = connection(); await api.initializeDatabase(db); await api.initializeDatabase(db);
-  assert.equal((await api.getEquipment(db)).length, 6); assert.equal((await api.getUsers(db)).length, 3);
+  assert.equal((await api.getEquipment(db)).length, 6); assert.equal((await readUserRecords(db)).length, 3);
   assert.deepEqual(db.sql.prepare('PRAGMA foreign_key_check').all(), []);
 });
 test('strict calendar validation and inclusive UTC days', () => {
@@ -407,15 +550,17 @@ test('status transitions, customer details and cancelled stock release', async (
   assert.equal((await api.getRentalDetails(db,r.reservationId)).items.length,1);
   assert.deepEqual(db.sql.prepare('PRAGMA foreign_key_check').all(),[]);
 });
-test('administrator user CRUD protects demo accounts', async () => {
-  const db = connection(); await api.initializeDatabase(db);
-  const user = { name: 'Panel Guest', contact: 'guest@example.com', role: 'customer' };
-  await api.saveUser(db,user); const saved = (await api.getUsers(db)).find(r=>r.name===user.name);
-  await api.saveUser(db,{...user,name:'Edited Guest'},saved.user_id);
-  assert.equal((await api.getUsers(db)).find(r=>r.user_id===saved.user_id).name,'Edited Guest');
-  await api.deleteUser(db,saved.user_id); assert.equal((await api.getUsers(db)).length,3);
-  await assert.rejects(api.deleteUser(db,3),/required/); await assert.rejects(api.saveUser(db,{...user,role:'supplier'},1),/fixed/);
+test('customer deletion removes credentials and supports ordinary low-ID accounts', async () => {
+ const db=connection(); await api.initializeDatabase(db);
+ const user=await api.registerCustomer(db,customerForm);
+ await api.deleteUser(db,user.user_id);
+ assert.equal((await readUserRecords(db)).length,3);
+ await assert.rejects(api.signInCustomer(db,customerForm.email,customerForm.password),/Email or password is incorrect/);
+ await api.deleteUser(db,1);
+ assert.deepEqual((await readUserRecords(db)).map(u=>u.user_id),[2,3]);
+ assert.deepEqual(db.sql.prepare('PRAGMA foreign_key_check').all(),[]);
 });
+
 test('completed rental contributes to admin totals and remains historical', async () => {
   const db = connection(); await api.initializeDatabase(db); const item = (await api.getEquipment(db))[0];
   const result = await api.createReservation(db,booking(item));
